@@ -318,7 +318,7 @@ def product_rows(product, platform):
         used = {r["Product image URL"] for r in rows}
         for image in images:
             if image and image not in used:
-                rows.append({key: "" for key in rows[0]} | {"URL handle": handle, "Product image URL": image})
+                rows.append({**{key: "" for key in rows[0]}, "URL handle": handle, "Product image URL": image})
         return rows
     # WooCommerce treats the regular price as original and sale price as current.
     if len(product.get("variants") or []) > 0:
