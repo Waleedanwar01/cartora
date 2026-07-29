@@ -148,6 +148,9 @@ def extract_product(url):
     crumbs = [x.get_text(" ", strip=True) for x in soup.select('[aria-label="Breadcrumb"] a, .breadcrumb a, .breadcrumbs a')]
     if not data["categories"] and crumbs: data["categories"] = ", ".join(crumbs[1:-1] or crumbs[:-1])
     data["tags"] = data["tags"] or meta_value('meta[name="keywords"]')
+    # If a source provides categories but no separate tags, carry the category as a
+    # searchable Shopify tag instead of leaving the field unusably empty.
+    data["tags"] = data["tags"] or data["categories"]
     # Common visual old-price patterns. This is intentionally separate from sale price.
     old = soup.select_one('[class*="compare" i], [class*="old-price" i], [class*="was-price" i], .price del, del.price')
     data["compare_at_price"] = data["compare_at_price"] or _money(old.get_text(" ", strip=True) if old else "")
@@ -287,21 +290,35 @@ def import_health(products):
 def product_rows(product, platform):
     images = product.get("images") or [""]
     variants = product.get("variants") or [{}]
+    # Some stores expose variant titles but omit option keys. Shopify still needs an
+    # option name/value pair, so preserve those variants as a Size option.
+    if len(variants) > 1 and not any(v.get("options") for v in variants):
+        for variant in variants:
+            if variant.get("title"):
+                variant["options"] = {"Size": variant["title"]}
+    # Do not emit invalid duplicate variants. Shopify requires every variant to be
+    # meaningfully distinct (different option values or SKU).
+    unique_variants, seen_variants = [], set()
+    for variant in variants:
+        key = (variant.get("sku", ""), tuple(sorted((variant.get("options") or {}).items())), variant.get("title", ""))
+        if key not in seen_variants:
+            unique_variants.append(variant); seen_variants.add(key)
+    variants = unique_variants
     if platform == "shopify":
         rows = []
         handle = product["title"].lower().replace(" ", "-")[:100]
         for index, variant in enumerate(variants):
             options = list((variant.get("options") or {}).items())[:3]
-            row = {"Handle": handle, "Title": product["title"] if index == 0 else "", "Body (HTML)": product["description"] if index == 0 else "", "Vendor": product["vendor"] if index == 0 else "", "Variant SKU": variant.get("sku") or product["sku"], "Variant Barcode": variant.get("barcode", ""), "Variant Grams": variant.get("weight", product.get("weight", "")), "Variant Price": variant.get("price") or product["price"], "Variant Compare At Price": variant.get("compare_at_price") or product.get("compare_at_price", ""), "Image Src": variant.get("image") or (images[0] if index == 0 else ""), "SEO Title": product.get("seo_title", "") if index == 0 else "", "SEO Description": product.get("seo_description", "") if index == 0 else "", "Tags": product.get("tags", "") if index == 0 else "", "Type": product.get("product_type") or product.get("categories", "") if index == 0 else "", "Published": "FALSE"}
+            row = {"Title": product["title"] if index == 0 else "", "URL handle": handle, "Description": product["description"] if index == 0 else "", "Vendor": product["vendor"] if index == 0 else "", "Product category": product.get("categories", "") if index == 0 else "", "Type": product.get("product_type", "") if index == 0 else "", "Tags": product.get("tags", "") if index == 0 else "", "Published on online store": "TRUE", "Status": "Draft", "SKU": variant.get("sku") or product["sku"], "Barcode": variant.get("barcode", ""), "Price": variant.get("price") or product["price"], "Compare-at price": variant.get("compare_at_price") or product.get("compare_at_price", ""), "Weight value (grams)": variant.get("weight", product.get("weight", "")), "Weight unit for display": "g", "Requires shipping": "TRUE", "Fulfillment service": "manual", "Product image URL": images[0] if index == 0 else "", "Variant image URL": variant.get("image", ""), "SEO title": product.get("seo_title", "") if index == 0 else "", "SEO description": product.get("seo_description", "") if index == 0 else ""}
             for number in range(1, 4):
                 name, value = options[number - 1] if len(options) >= number else ("", "")
-                row[f"Option{number} Name"], row[f"Option{number} Value"] = name, value
+                row[f"Option{number} name"], row[f"Option{number} value"] = name, value
             rows.append(row)
         # Image-only rows attach the remaining gallery images without duplicating the primary image.
-        used = {r["Image Src"] for r in rows}
+        used = {r["Product image URL"] for r in rows}
         for image in images:
             if image and image not in used:
-                rows.append({key: "" for key in rows[0]} | {"Handle": handle, "Image Src": image})
+                rows.append({key: "" for key in rows[0]} | {"URL handle": handle, "Product image URL": image})
         return rows
     # WooCommerce treats the regular price as original and sale price as current.
     if len(product.get("variants") or []) > 0:
